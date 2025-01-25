@@ -1,0 +1,173 @@
+#include "stm32f4xx.h"          // Include STM32F4 HAL library
+#include "stdbool.h"            // Include the stdbool library for boolean types
+
+/*
+Pin Assignments
+
+Outputs:
+Player 1 LEDs : A0, A1, A2, A3, A4, A5, A6, A7, A8
+Player 2 LEDs : B0, B1, B2, B3, B4, B5, B6, B7, B8
+
+Inputs:
+Row : A9, A10, A11
+Column : B12, B13, B14
+Reset : B15
+*/
+
+// Game State
+int board[9] = {0,0,0,0,0,0,0,0,0}; // 0: empty, 1: Player 1, 2: Player 2 (Stores the game board state)
+bool playerTurn = true;             // true: Player 1, false: Player 2 (Tracks whose turn it is)
+bool gameOver = false;              // Indicates if the game has ended
+int winner = 0;                     // 0: None, 1: Player 1, 2: Player 2 (Tracks the winner)
+int keypad[9][2] = {                // Mapping of keypad rows and columns to board indices
+    {9, 12}, {9, 13}, {9, 14},      // Row 1
+    {10, 12}, {10, 13}, {10, 14},   // Row 2
+    {11, 12}, {11, 13}, {11, 14}    // Row 3
+};
+
+void GPIOInit();                    // Function to initialize GPIO pins
+void resetGame();                   // Function to reset the game state
+void updateBoard();                 // Function to update the LEDs based on the board state
+bool checkWin();                    // Function to check for a win condition
+void dispWinner();                  // Function to display the winner
+void delay_ms(uint32_t ms);         // Simple delay function
+
+int main(){
+    GPIOInit();                     // Initialize GPIO pins
+    resetGame();                    // Reset the game to the initial state
+
+    while(1){
+        if((GPIOB->IDR & (0x00008000)) == 0){ // Check if reset button (PB15) is pressed
+            resetGame();             // Reset the game
+            delay_ms(300);           // Debounce delay
+        }
+
+    
+
+    if(!gameOver){               // If the game is not over
+            for(int i = 0; i < 9; i++){
+                GPIOA->ODR |= (0 << keypad[i][0]); // Activate row in keypad scanning
+                if(((GPIOB->IDR & (1 << keypad[i][1])) == 0) && (board[i] == 0)){ // Check if key is pressed and cell is empty
+                    board[i] = playerTurn ? 1 : 2; // Assign current player's marker
+                    updateBoard();         // Update LEDs based on the board
+                    if(checkWin()){        // Check if the move wins the game
+                        gameOver = true;   // Set game over flag
+                        break;             // Exit the loop
+                    } else {
+                        playerTurn = !playerTurn; // Switch to the other player's turn
+                    }
+                    delay_ms(100);         // Debounce delay
+                }
+                GPIOA->ODR |= (1 << keypad[i][0]); // Deactivate row
+            }
+        } else {
+            dispWinner();                  // Display the winner
+        }
+    }
+}
+
+void GPIOInit() {
+    // Enable GPIOA and GPIOB clock
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN; // Enable clocks for GPIOA and GPIOB
+
+    // Configure PA0 to PA11 as output
+    for (int pin = 0; pin <= 11; pin++) {
+        GPIOA->MODER &= ~(0x3 << (pin * 2)); // Clear mode bits
+        GPIOA->MODER |= (0x1 << (pin * 2));  // Set as output mode
+        GPIOA->OTYPER &= ~(0x1 << pin);      // Set as push-pull
+        GPIOA->OSPEEDR |= (0x3 << (pin * 2)); // Set to high speed
+        GPIOA->PUPDR &= ~(0x3 << (pin * 2));  // No pull-up/pull-down
+    }
+
+    // Configure PB0 to PB8 as output
+    for (int pin = 0; pin <= 8; pin++) {
+        GPIOB->MODER &= ~(0x3 << (pin * 2)); // Clear mode bits
+        GPIOB->MODER |= (0x1 << (pin * 2));  // Set as output mode
+        GPIOB->OTYPER &= ~(0x1 << pin);      // Set as push-pull
+        GPIOB->OSPEEDR |= (0x3 << (pin * 2)); // Set to high speed
+        GPIOB->PUPDR &= ~(0x3 << (pin * 2));  // No pull-up/pull-down
+    }
+
+
+    // Configure PB12 to PB15 as input with pull-up resistors
+    for (int pin = 12; pin <= 15; pin++) {
+        GPIOB->MODER &= ~(0x3 << (pin * 2)); // Input mode
+        GPIOB->PUPDR &= ~(0x3 << (pin * 2)); // Clear pull-up/pull-down
+        GPIOB->PUPDR |= (0x1 << (pin * 2));  // Enable pull-up
+    }
+
+
+}
+
+void resetGame(){
+    for(int i = 0; i < 9; i++){
+        board[i] = 0;                // Reset all cells to empty
+    }
+    playerTurn = true;               // Set Player 1's turn
+    gameOver = false;                // Clear game over flag
+    updateBoard();                   // Update LEDs
+}
+
+void updateBoard(){
+    for(int i = 0; i < 9; i++){
+        if(board[i] == 1){           // Player 1's marker
+            GPIOA->ODR |= (1 << i);  // Turn on corresponding Player 1 LED
+        }
+        else if(board[i] == 2){      // Player 2's marker
+            GPIOB->ODR |= (1 << i);  // Turn on corresponding Player 2 LED
+        }
+        else if(board[i] == 0){      // Empty cell
+            GPIOA->ODR |= (0 << i);  // Turn off Player 1 LED
+            GPIOB->ODR |= (0 << i);  // Turn off Player 2 LED
+        }
+    }
+}
+
+bool checkWin(){
+    const int winPatterns[8][3] = {  // Winning combinations
+        {0,1,2}, {3,4,5}, {6,7,8},   // Rows
+        {0,3,6}, {1,4,7}, {2,5,8},   // Columns
+        {0,4,8}, {2,4,6}             // Diagonals
+    };
+
+    for(int i = 0; i < 8; i++){
+        int a = winPatterns[i][0];
+        int b = winPatterns[i][1];
+        int c = winPatterns[i][2];
+
+     
+
+   if((board[a] != 0) && (board[a] == board[b]) && (board[a] == board[c])){ // Check win condition
+            winner = board[a];        // Set the winner
+            return true;              // Return win
+        }
+    }
+    return false;                     // No win found
+}
+
+void dispWinner(){
+    for(int i = 0; i < 9; i++){
+        if(winner == 1){              // Player 1 wins
+            GPIOA->ODR |= 0x000001FF; // Light up all Player 1 LEDs
+            GPIOB->ODR &= ~(0xFFF);   // Turn off Player 2 LEDs
+           
+
+
+ delay_ms(50);             // Brief delay
+            GPIOA->ODR &= ~(0xFFFFFFFF); // Turn off all Player 1 LEDs
+        }
+        else if(winner == 2){         // Player 2 wins
+            GPIOB->ODR |= 0x000001FF; // Light up all Player 2 LEDs
+            GPIOA->ODR &= ~(0xFFF);   // Turn off Player 1 LEDs
+            delay_ms(50);             // Brief delay
+            GPIOB->ODR &= ~(0xFFFFFFFF); // Turn off all Player 2 LEDs
+        }
+    }
+}
+
+void delay_ms(uint32_t ms) {
+    // Simple delay loop (not precise, for simplicity)
+    for (uint32_t i = 0; i < ms * 4000; i++) {
+        __NOP();                      // No operation, acts as delay
+    }
+}
